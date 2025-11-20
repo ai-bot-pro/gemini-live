@@ -4,7 +4,7 @@ import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
 import { decodeBase64, float32ToPcmBlob, pcmToAudioBuffer } from './utils/audioUtils';
-import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon } from '@heroicons/react/24/solid';
+import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon } from '@heroicons/react/24/solid';
 
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
@@ -16,6 +16,11 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState<VoiceName>('Puck');
   const [volume, setVolume] = useState<number>(0);
   const [showSettings, setShowSettings] = useState(false);
+  
+  // Auth State
+  const [authMode, setAuthMode] = useState<'apiKey' | 'token'>(() => {
+    return (localStorage.getItem('gemini_auth_mode') as 'apiKey' | 'token') || 'apiKey';
+  });
   const [apiKey, setApiKey] = useState<string>(() => {
     return localStorage.getItem('gemini_api_key') || process.env.API_KEY || '';
   });
@@ -60,10 +65,13 @@ export default function App() {
     e.preventDefault();
     const formData = new FormData(e.target as HTMLFormElement);
     const key = formData.get('apiKey') as string;
+    
     setApiKey(key);
     localStorage.setItem('gemini_api_key', key);
+    localStorage.setItem('gemini_auth_mode', authMode);
+    
     setShowSettings(false);
-    addLog('system', 'API Key updated.');
+    addLog('system', `${authMode === 'apiKey' ? 'API Key' : 'Token'} configuration updated.`);
   };
 
   // --- Cleanup Function ---
@@ -109,7 +117,7 @@ export default function App() {
   const connect = async () => {
     try {
       if (!apiKey) {
-        addLog('system', 'API Key missing. Please configure it in settings.');
+        addLog('system', 'Credentials missing. Please configure in settings.');
         setShowSettings(true);
         return;
       }
@@ -286,29 +294,69 @@ export default function App() {
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl animate-fade-in-up">
-            <div className="flex justify-between items-center mb-4">
+            <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-bold text-white">Settings</h3>
               <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition-colors">
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <form onSubmit={handleSaveSettings} className="space-y-4">
+            
+            <form onSubmit={handleSaveSettings} className="space-y-6">
+              {/* Auth Mode Toggle */}
+              <div className="p-1 bg-slate-950 rounded-lg flex border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('apiKey')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${
+                    authMode === 'apiKey' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <KeyIcon className="w-4 h-4" />
+                  API Key
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('token')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${
+                    authMode === 'token' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <ClockIcon className="w-4 h-4" />
+                  Ephemeral Token
+                </button>
+              </div>
+
               <div>
-                <label className="block text-sm font-medium text-slate-400 mb-1">Gemini API Key</label>
-                <input 
-                  type="password" 
-                  name="apiKey"
-                  defaultValue={apiKey}
-                  placeholder="AIza..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  Your key is stored locally in your browser.
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  {authMode === 'apiKey' ? 'Gemini API Key' : 'Access Token'}
+                </label>
+                <div className="relative">
+                  <input 
+                    type="password" 
+                    name="apiKey"
+                    defaultValue={apiKey}
+                    placeholder={authMode === 'apiKey' ? "AIza..." : "Paste your temporary token..."}
+                    className={`w-full bg-slate-950 border rounded-lg px-4 py-3 text-white focus:ring-2 outline-none transition-all ${
+                      authMode === 'apiKey' 
+                        ? 'border-slate-800 focus:border-blue-500 focus:ring-blue-500/20' 
+                        : 'border-purple-900/50 focus:border-purple-500 focus:ring-purple-500/20'
+                    }`}
+                  />
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  {authMode === 'apiKey' 
+                    ? "Your key is stored locally in your browser's localStorage." 
+                    : "Use an ephemeral token provided by your backend. Valid for a limited time."}
                 </p>
               </div>
+
               <button 
                 type="submit"
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg font-semibold transition-colors"
+                className={`w-full py-3 rounded-lg font-semibold text-white transition-all shadow-lg active:scale-95 ${
+                  authMode === 'apiKey'
+                    ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
+                    : 'bg-purple-600 hover:bg-purple-500 shadow-purple-500/20'
+                }`}
               >
                 Save Configuration
               </button>
@@ -345,7 +393,9 @@ export default function App() {
            </div>
            <button 
              onClick={() => setShowSettings(true)}
-             className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-all"
+             className={`p-2 rounded-lg bg-slate-800 transition-all ${
+               !apiKey ? 'text-red-400 animate-pulse ring-1 ring-red-500' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+             }`}
              title="Configure API Key"
            >
              <Cog6ToothIcon className="w-5 h-5" />
@@ -442,7 +492,10 @@ export default function App() {
               ) : (
                 <button
                   onClick={connect}
-                  className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full font-semibold transition-all transform hover:scale-105 active:scale-95 shadow-lg shadow-blue-500/20"
+                  className={`flex items-center gap-2 px-8 py-3 rounded-full font-semibold transition-all transform hover:scale-105 active:scale-95 shadow-lg ${
+                    !apiKey ? 'bg-slate-700 text-slate-400 cursor-not-allowed opacity-50' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'
+                  }`}
+                  disabled={!apiKey}
                 >
                   <MicrophoneIcon className="w-5 h-5" />
                   <span>Start Live</span>
