@@ -2,6 +2,7 @@
   "name": "Gemini Live React Demo",
   "description": "A real-time voice interaction demo using the Gemini Live API with audio streaming and visualization.",
   "requestFramePermissions": [
-    "microphone"
+    "microphone",
+    "camera"
   ]
 }

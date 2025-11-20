@@ -4,7 +4,7 @@ import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
 import { decodeBase64, float32ToPcmBlob, pcmToAudioBuffer } from './utils/audioUtils';
-import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon, ChatBubbleBottomCenterTextIcon } from '@heroicons/react/24/solid';
+import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon, ChatBubbleBottomCenterTextIcon, VideoCameraIcon, VideoCameraSlashIcon } from '@heroicons/react/24/solid';
 
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
@@ -16,6 +16,7 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState<VoiceName>('Puck');
   const [volume, setVolume] = useState<number>(0);
   const [showSettings, setShowSettings] = useState(false);
+  const [videoEnabled, setVideoEnabled] = useState(false);
 
   // Auth State
   const [authMode, setAuthMode] = useState<'apiKey' | 'token'>(() => {
@@ -38,6 +39,10 @@ export default function App() {
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const frameIntervalRef = useRef<number | null>(null);
+  const videoCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const nextStartTimeRef = useRef<number>(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
@@ -113,6 +118,11 @@ export default function App() {
       mediaStreamRef.current = null;
     }
 
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current);
+      frameIntervalRef.current = null;
+    }
+
     nextStartTimeRef.current = 0;
     sessionRef.current = null;
     currentTranscriptRef.current = null;
@@ -125,14 +135,15 @@ export default function App() {
   // --- Connection Logic ---
   const connect = async () => {
     try {
-      if (!apiKey) {
+      const cleanKey = apiKey.trim();
+      if (!cleanKey) {
         addLog('system', 'Credentials missing. Please configure in settings.');
         setShowSettings(true);
         return;
       }
 
       setStatus(LiveStatus.CONNECTING);
-      addLog('system', 'Initializing audio devices...');
+      addLog('system', 'Initializing devices...');
 
       inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 16000
@@ -142,27 +153,39 @@ export default function App() {
         sampleRate: 24000
       });
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Request Audio and optionally Video
+      const constraints: MediaStreamConstraints = {
+        audio: true,
+        video: videoEnabled ? { width: 640, height: 480, facingMode: 'user' } : false
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       mediaStreamRef.current = stream;
+
+      // If video is enabled, attach to video element
+      if (videoEnabled && videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(e => console.error("Video play failed", e));
+      }
 
       const analyser = inputAudioContextRef.current.createAnalyser();
       analyser.fftSize = 256;
       analyserRef.current = analyser;
 
       addLog('system', 'Connecting to Gemini Live...');
-      const client = getGenAIClient(apiKey);
+      const client = getGenAIClient(cleanKey);
 
       const sessionPromise = client.live.connect({
         model: MODEL_NAME,
         config: {
-          // Use strict string literal 'AUDIO' to avoid runtime Enum resolution issues in browser bundles
-          responseModalities: ['AUDIO' as any],
+          responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } }
           },
-          inputAudioTranscription: {}, // Enable input transcription
-          outputAudioTranscription: {}, // Enable output transcription
-          systemInstruction: systemInstruction
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          // Wrap system instruction in a Content part to ensure robust serialization
+          systemInstruction: { parts: [{ text: systemInstruction }] }
         },
         callbacks: {
           onopen: () => {
@@ -171,6 +194,7 @@ export default function App() {
 
             if (!inputAudioContextRef.current || !mediaStreamRef.current) return;
 
+            // --- Audio Input Setup ---
             const inputCtx = inputAudioContextRef.current;
             const source = inputCtx.createMediaStreamSource(mediaStreamRef.current);
             audioSourceRef.current = source;
@@ -195,6 +219,39 @@ export default function App() {
             source.connect(analyser);
             source.connect(processor);
             processor.connect(inputCtx.destination);
+
+            // --- Video Input Setup (if enabled) ---
+            if (videoEnabled) {
+              const videoEl = videoRef.current;
+              if (!videoCanvasRef.current) {
+                videoCanvasRef.current = document.createElement('canvas');
+              }
+              const canvas = videoCanvasRef.current;
+              const ctx = canvas.getContext('2d');
+
+              if (videoEl && ctx) {
+                // Send frames at ~5 FPS to avoid saturating bandwidth
+                frameIntervalRef.current = window.setInterval(() => {
+                  if (videoEl.readyState >= 2) { // HTMLMediaElement.HAVE_CURRENT_DATA
+                    canvas.width = videoEl.videoWidth;
+                    canvas.height = videoEl.videoHeight;
+                    ctx.drawImage(videoEl, 0, 0);
+
+                    // Convert to base64 JPEG
+                    const base64Data = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+
+                    sessionPromise.then((session) => {
+                      session.sendRealtimeInput({
+                        media: {
+                          mimeType: 'image/jpeg',
+                          data: base64Data
+                        }
+                      });
+                    });
+                  }
+                }, 200);
+              }
+            }
           },
           onmessage: async (message: LiveServerMessage) => {
             // --- Handle Audio Output ---
@@ -438,13 +495,24 @@ export default function App() {
 
           {/* Visualizer Card (Flexible height) */}
           {/* Updated: min-h-[100px] on mobile instead of 180px to prevent overflow covering the next section */}
-          <div className="flex-1 bg-slate-900 rounded-2xl border border-slate-800 relative overflow-hidden shadow-2xl shadow-black/50 min-h-[100px] sm:min-h-[250px] min-w-0">
+          <div className="flex-1 bg-slate-900 rounded-2xl border border-slate-800 relative overflow-hidden shadow-2xl shadow-black/50 min-h-[100px] sm:min-h-[250px] min-w-0 group">
 
-            {/* 0. Background Glow */}
-            <div className={`absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent transition-opacity duration-700 ${status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}></div>
+            {/* 0. Background Glow (Only if no video) */}
+            {!videoEnabled && (
+              <div className={`absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent transition-opacity duration-700 ${status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}></div>
+            )}
+
+            {/* Video Element */}
+            <video
+              ref={videoRef}
+              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${videoEnabled && status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}
+              autoPlay
+              muted
+              playsInline
+            />
 
             {/* 1. Visualizer Canvas (Bottom Aligned & Behind Captions) */}
-            <div className="absolute bottom-0 left-0 right-0 h-32 sm:h-48 z-0 opacity-60 pointer-events-none mix-blend-screen">
+            <div className="absolute bottom-0 left-0 right-0 h-32 sm:h-48 z-10 opacity-60 pointer-events-none mix-blend-screen">
               <AudioVisualizer
                 analyser={analyserRef.current}
                 isListening={status === LiveStatus.CONNECTED}
@@ -452,23 +520,26 @@ export default function App() {
             </div>
 
             {/* 2. Speaker Icon (Absolute Center - "Adaptive Center") */}
-            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-              <div className="relative flex-shrink-0">
-                {status === LiveStatus.CONNECTED ? (
-                  <div className="relative flex items-center justify-center w-24 h-24 sm:w-32 sm:h-32">
-                    <div className="absolute inset-0 rounded-full border-4 border-blue-500/30 animate-ring"></div>
-                    <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ring" style={{ animationDelay: '-0.5s' }}></div>
-                    <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] animate-dot flex items-center justify-center">
-                      <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-white" />
+            {/* Hide if video is enabled and connected */}
+            {(!videoEnabled || status !== LiveStatus.CONNECTED) && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+                <div className="relative flex-shrink-0">
+                  {status === LiveStatus.CONNECTED ? (
+                    <div className="relative flex items-center justify-center w-24 h-24 sm:w-32 sm:h-32">
+                      <div className="absolute inset-0 rounded-full border-4 border-blue-500/30 animate-ring"></div>
+                      <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ring" style={{ animationDelay: '-0.5s' }}></div>
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] animate-dot flex items-center justify-center">
+                        <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-white" />
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700 shadow-inner">
-                    <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-slate-600" />
-                  </div>
-                )}
+                  ) : (
+                    <div className="w-20 h-20 sm:w-24 sm:h-24 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700 shadow-inner">
+                      <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-slate-600" />
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 3. Live Captions (Bottom Overlay) */}
             <div className="absolute bottom-4 sm:bottom-8 left-0 right-0 px-4 z-20 flex justify-center pointer-events-none">
@@ -486,7 +557,7 @@ export default function App() {
                 ) : (
                   status === LiveStatus.CONNECTED ? (
                     <p className="text-slate-500 text-xs sm:text-sm font-medium animate-pulse tracking-widest uppercase bg-black/20 px-3 py-1 rounded-full inline-block backdrop-blur-sm">
-                      Listening...
+                      {videoEnabled ? 'Watching & Listening...' : 'Listening...'}
                     </p>
                   ) : (
                     <p className="text-slate-500 text-xs sm:text-sm">Ready to connect</p>
@@ -497,20 +568,37 @@ export default function App() {
           </div>
 
           {/* Controls Card (Fixed height) */}
-          {/* Changed items-center to items-stretch on mobile to ensure left-alignment with padding */}
           <div className="flex-none bg-slate-900 rounded-2xl border border-slate-800 p-4 sm:p-6 flex flex-col md:flex-row items-stretch md:items-center gap-4 justify-between shadow-lg z-20">
-            <div className="flex flex-col gap-2 w-full md:w-auto">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Voice Selection</label>
-              <select
-                value={selectedVoice}
-                onChange={(e) => setSelectedVoice(e.target.value as VoiceName)}
-                disabled={status !== LiveStatus.DISCONNECTED}
-                className="bg-slate-950 border border-slate-700 text-slate-200 rounded-lg px-4 py-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed appearance-none cursor-pointer w-full"
-              >
-                {['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].map(v => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
+            <div className="flex flex-row gap-4 w-full md:w-auto">
+              <div className="flex-1 flex flex-col gap-2">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Voice</label>
+                <select
+                  value={selectedVoice}
+                  onChange={(e) => setSelectedVoice(e.target.value as VoiceName)}
+                  disabled={status !== LiveStatus.DISCONNECTED}
+                  className="bg-slate-950 border border-slate-700 text-slate-200 rounded-lg px-4 py-2 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed appearance-none cursor-pointer w-full"
+                >
+                  {['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].map(v => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Camera Toggle */}
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Camera</label>
+                <button
+                  onClick={() => setVideoEnabled(!videoEnabled)}
+                  disabled={status !== LiveStatus.DISCONNECTED}
+                  className={`h-[42px] px-4 rounded-lg border flex items-center justify-center transition-all ${videoEnabled
+                      ? 'bg-blue-600/20 border-blue-500 text-blue-400'
+                      : 'bg-slate-950 border-slate-700 text-slate-500 hover:text-slate-300'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  title={videoEnabled ? "Camera On" : "Camera Off"}
+                >
+                  {videoEnabled ? <VideoCameraIcon className="w-5 h-5" /> : <VideoCameraSlashIcon className="w-5 h-5" />}
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-4 w-full md:w-auto justify-center md:justify-end">
