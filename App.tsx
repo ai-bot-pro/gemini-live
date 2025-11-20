@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage } from '@google/genai';
 import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
@@ -138,7 +138,8 @@ export default function App() {
       const sessionPromise = client.live.connect({
         model: MODEL_NAME,
         config: {
-          responseModalities: [Modality.AUDIO],
+          // Use 'AUDIO' string directly to avoid Enum resolution issues in some bundlers
+          responseModalities: ['AUDIO'] as any, 
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } }
           },
