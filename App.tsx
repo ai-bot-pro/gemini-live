@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
@@ -433,66 +433,72 @@ export default function App() {
       <main className="flex-1 flex flex-col lg:flex-row min-h-0 p-4 gap-4 max-w-7xl mx-auto w-full">
 
         {/* Left Panel: Visualizer & Controls */}
-        {/* Mobile: Fixed 45vh height to ensure space for logs. Desktop: Flex-1 to fill width. */}
-        <div className="flex flex-col gap-4 min-h-0 lg:flex-1 h-[45vh] lg:h-auto flex-none">
+        {/* Mobile: Fixed 45vh height. We use w-full to ensure alignment. */}
+        <div className="flex flex-col gap-4 min-h-0 lg:flex-1 h-[45vh] lg:h-auto flex-none w-full">
 
           {/* Visualizer Card (Flexible height) */}
-          <div className="flex-1 bg-slate-900 rounded-2xl border border-slate-800 p-4 sm:p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-2xl shadow-black/50 min-h-[180px] sm:min-h-[250px]">
-            {/* Background Glow */}
+          {/* Updated: min-h-[100px] on mobile instead of 180px to prevent overflow covering the next section */}
+          <div className="flex-1 bg-slate-900 rounded-2xl border border-slate-800 relative overflow-hidden shadow-2xl shadow-black/50 min-h-[100px] sm:min-h-[250px] min-w-0">
+
+            {/* 0. Background Glow */}
             <div className={`absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent transition-opacity duration-700 ${status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}></div>
 
-            {/* Center Animation */}
-            <div className="relative z-10 mb-4 sm:mb-8 flex-shrink-0">
-              {status === LiveStatus.CONNECTED ? (
-                <div className="relative flex items-center justify-center w-20 h-20 sm:w-32 sm:h-32">
-                  <div className="absolute inset-0 rounded-full border-4 border-blue-500/30 animate-ring"></div>
-                  <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ring" style={{ animationDelay: '-0.5s' }}></div>
-                  <div className="w-14 h-14 sm:w-20 sm:h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] animate-dot flex items-center justify-center">
-                    <SpeakerWaveIcon className="w-6 h-6 sm:w-10 sm:h-10 text-white" />
-                  </div>
-                </div>
-              ) : (
-                <div className="w-16 h-16 sm:w-24 sm:h-24 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700">
-                  <SpeakerWaveIcon className="w-6 h-6 sm:w-10 sm:h-10 text-slate-600" />
-                </div>
-              )}
-            </div>
-
-            {/* Canvas Visualizer */}
-            <div className="w-full h-12 sm:h-24 relative z-10 mix-blend-screen flex-shrink-0">
+            {/* 1. Visualizer Canvas (Bottom Aligned & Behind Captions) */}
+            <div className="absolute bottom-0 left-0 right-0 h-32 sm:h-48 z-0 opacity-60 pointer-events-none mix-blend-screen">
               <AudioVisualizer
                 analyser={analyserRef.current}
                 isListening={status === LiveStatus.CONNECTED}
               />
             </div>
 
-            {/* Live Captions Overlay */}
-            <div className="mt-4 sm:mt-8 w-full max-w-2xl min-h-[50px] sm:min-h-[60px] text-center relative z-20 overflow-y-auto max-h-[120px] sm:max-h-[150px] scrollbar-hide">
-              {streamingLog ? (
-                <div className={`inline-block px-3 py-2 sm:px-6 sm:py-3 rounded-2xl backdrop-blur-md border shadow-xl transition-all duration-300 animate-fade-in-up ${streamingLog.role === 'user'
-                    ? 'bg-blue-500/20 border-blue-500/30 text-blue-100'
-                    : 'bg-purple-500/20 border-purple-500/30 text-purple-100'
-                  }`}>
-                  <p className="text-sm sm:text-xl font-medium leading-relaxed tracking-wide">
-                    {streamingLog.text}
-                    {status === LiveStatus.CONNECTED && <span className="inline-block w-1.5 h-4 ml-2 bg-current animate-pulse align-middle rounded-full" />}
-                  </p>
-                </div>
-              ) : (
-                status === LiveStatus.CONNECTED && (
-                  <p className="text-slate-500 text-xs sm:text-sm font-medium animate-pulse tracking-widest uppercase">
-                    Listening...
-                  </p>
-                )
-              )}
-              {status !== LiveStatus.CONNECTED && !streamingLog && (
-                <p className="text-slate-500 text-xs sm:text-sm">Ready to connect</p>
-              )}
+            {/* 2. Speaker Icon (Absolute Center - "Adaptive Center") */}
+            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+              <div className="relative flex-shrink-0">
+                {status === LiveStatus.CONNECTED ? (
+                  <div className="relative flex items-center justify-center w-24 h-24 sm:w-32 sm:h-32">
+                    <div className="absolute inset-0 rounded-full border-4 border-blue-500/30 animate-ring"></div>
+                    <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ring" style={{ animationDelay: '-0.5s' }}></div>
+                    <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] animate-dot flex items-center justify-center">
+                      <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-white" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700 shadow-inner">
+                    <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-slate-600" />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 3. Live Captions (Bottom Overlay) */}
+            <div className="absolute bottom-4 sm:bottom-8 left-0 right-0 px-4 z-20 flex justify-center pointer-events-none">
+              <div className="max-w-2xl w-full text-center pointer-events-auto">
+                {streamingLog ? (
+                  <div className={`inline-block px-4 py-2 sm:px-6 sm:py-3 rounded-2xl backdrop-blur-md border shadow-xl transition-all duration-300 animate-fade-in-up ${streamingLog.role === 'user'
+                      ? 'bg-blue-500/20 border-blue-500/30 text-blue-100'
+                      : 'bg-purple-500/20 border-purple-500/30 text-purple-100'
+                    }`}>
+                    <p className="text-sm sm:text-lg font-medium leading-relaxed tracking-wide line-clamp-3">
+                      {streamingLog.text}
+                      {status === LiveStatus.CONNECTED && <span className="inline-block w-1.5 h-4 ml-2 bg-current animate-pulse align-middle rounded-full" />}
+                    </p>
+                  </div>
+                ) : (
+                  status === LiveStatus.CONNECTED ? (
+                    <p className="text-slate-500 text-xs sm:text-sm font-medium animate-pulse tracking-widest uppercase bg-black/20 px-3 py-1 rounded-full inline-block backdrop-blur-sm">
+                      Listening...
+                    </p>
+                  ) : (
+                    <p className="text-slate-500 text-xs sm:text-sm">Ready to connect</p>
+                  )
+                )}
+              </div>
             </div>
           </div>
 
           {/* Controls Card (Fixed height) */}
-          <div className="flex-none bg-slate-900 rounded-2xl border border-slate-800 p-4 sm:p-6 flex flex-col md:flex-row items-center gap-4 justify-between shadow-lg z-20">
+          {/* Changed items-center to items-stretch on mobile to ensure left-alignment with padding */}
+          <div className="flex-none bg-slate-900 rounded-2xl border border-slate-800 p-4 sm:p-6 flex flex-col md:flex-row items-stretch md:items-center gap-4 justify-between shadow-lg z-20">
             <div className="flex flex-col gap-2 w-full md:w-auto">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Voice Selection</label>
               <select
@@ -533,14 +539,15 @@ export default function App() {
 
         {/* Right Panel: Logs */}
         {/* Mobile: Flex-1 to take remaining space + min-h-0 for internal scrolling. Desktop: Fixed width side panel. */}
-        <div className="flex-1 flex flex-col bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-lg min-h-0 lg:w-96 lg:flex-none lg:h-auto">
-          <div className="p-4 border-b border-slate-800 bg-slate-900/50 flex-none">
+        {/* Added w-full to ensure consistent width with left panel on mobile */}
+        <div className="flex-1 flex flex-col bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-lg min-h-0 lg:w-96 lg:flex-none lg:h-auto w-full">
+          <div className="p-4 sm:p-6 border-b border-slate-800 bg-slate-900/50 flex-none">
             <h2 className="font-semibold text-slate-200">Session History</h2>
           </div>
 
           <div
             ref={logContainerRef}
-            className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide scroll-smooth"
+            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 scrollbar-hide scroll-smooth"
           >
             {logs.length === 0 && !streamingLog && (
               <div className="text-center text-slate-600 mt-10 text-sm italic">
