@@ -3,6 +3,7 @@ import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
+import { DigitalAvatar } from './components/DigitalAvatar';
 import { decodeBase64, float32ToPcmBlob, pcmToAudioBuffer } from './utils/audioUtils';
 import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon, ChatBubbleBottomCenterTextIcon, VideoCameraIcon, VideoCameraSlashIcon, ComputerDesktopIcon } from '@heroicons/react/24/solid';
 
@@ -43,6 +44,7 @@ export default function App() {
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const outputAnalyserRef = useRef<AnalyserNode | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameIntervalRef = useRef<number | null>(null);
@@ -163,6 +165,12 @@ export default function App() {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 24000
       });
+
+      // Setup Output Analyser for Avatar Animation
+      const outAnalyser = audioContextRef.current.createAnalyser();
+      outAnalyser.fftSize = 256;
+      outAnalyser.smoothingTimeConstant = 0.5;
+      outputAnalyserRef.current = outAnalyser;
 
       // 1. Setup Audio (Microphone) - Always required
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -312,7 +320,14 @@ export default function App() {
 
               const source = ctx.createBufferSource();
               source.buffer = audioBuffer;
-              source.connect(ctx.destination);
+
+              // Connect to Analyser for Avatar Animation -> Destination
+              if (outputAnalyserRef.current) {
+                source.connect(outputAnalyserRef.current);
+                outputAnalyserRef.current.connect(ctx.destination);
+              } else {
+                source.connect(ctx.destination);
+              }
 
               source.start(nextStartTimeRef.current);
               nextStartTimeRef.current += audioBuffer.duration;
@@ -567,25 +582,14 @@ export default function App() {
               />
             </div>
 
-            {/* 2. Speaker Icon (Absolute Center - "Adaptive Center") */}
+            {/* 2. Digital Human / Speaker (Absolute Center - "Adaptive Center") */}
             {/* Hide if video is enabled and connected */}
             {(videoMode === 'none' || status !== LiveStatus.CONNECTED) && (
               <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-                <div className="relative flex-shrink-0">
-                  {status === LiveStatus.CONNECTED ? (
-                    <div className="relative flex items-center justify-center w-24 h-24 sm:w-32 sm:h-32">
-                      <div className="absolute inset-0 rounded-full border-4 border-blue-500/30 animate-ring"></div>
-                      <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ring" style={{ animationDelay: '-0.5s' }}></div>
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full shadow-[0_0_30px_rgba(59,130,246,0.5)] animate-dot flex items-center justify-center">
-                        <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-white" />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="w-20 h-20 sm:w-24 sm:h-24 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700 shadow-inner">
-                      <SpeakerWaveIcon className="w-8 h-8 sm:w-10 sm:h-10 text-slate-600" />
-                    </div>
-                  )}
-                </div>
+                <DigitalAvatar
+                  analyser={outputAnalyserRef.current}
+                  isSessionActive={status === LiveStatus.CONNECTED}
+                />
               </div>
             )}
 
