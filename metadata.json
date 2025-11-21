@@ -3,6 +3,7 @@
   "description": "A real-time voice interaction demo using the Gemini Live API with audio streaming and visualization.",
   "requestFramePermissions": [
     "microphone",
-    "camera"
+    "camera",
+    "display-capture"
   ]
 }

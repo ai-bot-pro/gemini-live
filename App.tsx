@@ -4,7 +4,7 @@ import { getGenAIClient } from './services/geminiService';
 import { LiveStatus, LogMessage, VoiceName } from './types';
 import { AudioVisualizer } from './components/AudioVisualizer';
 import { decodeBase64, float32ToPcmBlob, pcmToAudioBuffer } from './utils/audioUtils';
-import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon, ChatBubbleBottomCenterTextIcon, VideoCameraIcon, VideoCameraSlashIcon } from '@heroicons/react/24/solid';
+import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, Cog6ToothIcon, XMarkIcon, KeyIcon, ClockIcon, ChatBubbleBottomCenterTextIcon, VideoCameraIcon, VideoCameraSlashIcon, ComputerDesktopIcon } from '@heroicons/react/24/solid';
 
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
@@ -16,7 +16,7 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState<VoiceName>('Puck');
   const [volume, setVolume] = useState<number>(0);
   const [showSettings, setShowSettings] = useState(false);
-  const [videoEnabled, setVideoEnabled] = useState(false);
+  const [videoMode, setVideoMode] = useState<'none' | 'camera' | 'screen'>('none');
 
   // Auth State
   const [authMode, setAuthMode] = useState<'apiKey' | 'token'>(() => {
@@ -35,7 +35,11 @@ export default function App() {
   const sessionRef = useRef<Promise<any> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  // Streams
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
+
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -113,9 +117,16 @@ export default function App() {
       inputAudioContextRef.current = null;
     }
 
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
+    // Stop Audio Stream
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(track => track.stop());
+      audioStreamRef.current = null;
+    }
+
+    // Stop Video Stream (Camera or Screen)
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach(track => track.stop());
+      videoStreamRef.current = null;
     }
 
     if (frameIntervalRef.current) {
@@ -153,19 +164,39 @@ export default function App() {
         sampleRate: 24000
       });
 
-      // Request Audio and optionally Video
-      const constraints: MediaStreamConstraints = {
-        audio: true,
-        video: videoEnabled ? { width: 640, height: 480, facingMode: 'user' } : false
-      };
+      // 1. Setup Audio (Microphone) - Always required
+      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = audioStream;
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      mediaStreamRef.current = stream;
+      // 2. Setup Video (Camera or Screen) - Optional
+      let videoStream: MediaStream | null = null;
+      try {
+        if (videoMode === 'camera') {
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480, facingMode: 'user' }
+          });
+        } else if (videoMode === 'screen') {
+          videoStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { width: 1920, height: 1080 },
+            audio: false // We use microphone for audio
+          });
+          // Handle user stopping share via browser UI
+          videoStream.getVideoTracks()[0].onended = () => {
+            setVideoMode('none');
+            addLog('system', 'Screen sharing stopped by user.');
+          };
+        }
+      } catch (e) {
+        console.error("Video setup failed", e);
+        addLog('system', 'Video/Screen access denied or cancelled. Continuing with audio only.');
+        setVideoMode('none');
+      }
+      videoStreamRef.current = videoStream;
 
-      // If video is enabled, attach to video element
-      if (videoEnabled && videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(e => console.error("Video play failed", e));
+      // Attach video stream to UI element
+      if (videoStream && videoRef.current) {
+        videoRef.current.srcObject = videoStream;
+        await videoRef.current.play().catch(e => console.error("Video play failed", e));
       }
 
       const analyser = inputAudioContextRef.current.createAnalyser();
@@ -188,15 +219,22 @@ export default function App() {
           systemInstruction: { parts: [{ text: systemInstruction }] }
         },
         callbacks: {
-          onopen: () => {
+          onopen: async () => {
             setStatus(LiveStatus.CONNECTED);
             addLog('system', 'Connected! Start talking.');
 
-            if (!inputAudioContextRef.current || !mediaStreamRef.current) return;
+            if (!inputAudioContextRef.current || !audioStreamRef.current) return;
 
             // --- Audio Input Setup ---
             const inputCtx = inputAudioContextRef.current;
-            const source = inputCtx.createMediaStreamSource(mediaStreamRef.current);
+
+            // Ensure context is running (crucial if screen selection took a while)
+            if (inputCtx.state === 'suspended') {
+              await inputCtx.resume();
+            }
+
+            // Use the audioStream we captured explicitly
+            const source = inputCtx.createMediaStreamSource(audioStreamRef.current);
             audioSourceRef.current = source;
 
             const processor = inputCtx.createScriptProcessor(4096, 1, 1);
@@ -220,8 +258,8 @@ export default function App() {
             source.connect(processor);
             processor.connect(inputCtx.destination);
 
-            // --- Video Input Setup (if enabled) ---
-            if (videoEnabled) {
+            // --- Video/Screen Input Setup (if enabled) ---
+            if (videoStream && videoRef.current) {
               const videoEl = videoRef.current;
               if (!videoCanvasRef.current) {
                 videoCanvasRef.current = document.createElement('canvas');
@@ -230,12 +268,22 @@ export default function App() {
               const ctx = canvas.getContext('2d');
 
               if (videoEl && ctx) {
+                addLog('system', `Streaming ${videoMode === 'screen' ? 'screen' : 'camera'} feed...`);
+
                 // Send frames at ~5 FPS to avoid saturating bandwidth
                 frameIntervalRef.current = window.setInterval(() => {
                   if (videoEl.readyState >= 2) { // HTMLMediaElement.HAVE_CURRENT_DATA
-                    canvas.width = videoEl.videoWidth;
-                    canvas.height = videoEl.videoHeight;
-                    ctx.drawImage(videoEl, 0, 0);
+                    // Downscale massive screens to prevent bandwidth saturation
+                    const MAX_WIDTH = 640;
+                    const videoWidth = videoEl.videoWidth;
+                    const videoHeight = videoEl.videoHeight;
+                    const scale = Math.min(1, MAX_WIDTH / videoWidth);
+
+                    canvas.width = videoWidth * scale;
+                    canvas.height = videoHeight * scale;
+
+                    // Draw scaled image
+                    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
 
                     // Convert to base64 JPEG
                     const base64Data = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
@@ -498,14 +546,14 @@ export default function App() {
           <div className="flex-1 bg-slate-900 rounded-2xl border border-slate-800 relative overflow-hidden shadow-2xl shadow-black/50 min-h-[100px] sm:min-h-[250px] min-w-0 group">
 
             {/* 0. Background Glow (Only if no video) */}
-            {!videoEnabled && (
+            {videoMode === 'none' && (
               <div className={`absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent transition-opacity duration-700 ${status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}></div>
             )}
 
-            {/* Video Element */}
+            {/* Video Element (Camera or Screen) */}
             <video
               ref={videoRef}
-              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${videoEnabled && status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}
+              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${videoMode !== 'none' && status === LiveStatus.CONNECTED ? 'opacity-100' : 'opacity-0'}`}
               autoPlay
               muted
               playsInline
@@ -521,7 +569,7 @@ export default function App() {
 
             {/* 2. Speaker Icon (Absolute Center - "Adaptive Center") */}
             {/* Hide if video is enabled and connected */}
-            {(!videoEnabled || status !== LiveStatus.CONNECTED) && (
+            {(videoMode === 'none' || status !== LiveStatus.CONNECTED) && (
               <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
                 <div className="relative flex-shrink-0">
                   {status === LiveStatus.CONNECTED ? (
@@ -557,7 +605,9 @@ export default function App() {
                 ) : (
                   status === LiveStatus.CONNECTED ? (
                     <p className="text-slate-500 text-xs sm:text-sm font-medium animate-pulse tracking-widest uppercase bg-black/20 px-3 py-1 rounded-full inline-block backdrop-blur-sm">
-                      {videoEnabled ? 'Watching & Listening...' : 'Listening...'}
+                      {videoMode === 'camera' ? 'Watching Camera & Listening...' :
+                        videoMode === 'screen' ? 'Watching Screen & Listening...' :
+                          'Listening...'}
                     </p>
                   ) : (
                     <p className="text-slate-500 text-xs sm:text-sm">Ready to connect</p>
@@ -584,20 +634,36 @@ export default function App() {
                 </select>
               </div>
 
-              {/* Camera Toggle */}
+              {/* Video Sources */}
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Camera</label>
-                <button
-                  onClick={() => setVideoEnabled(!videoEnabled)}
-                  disabled={status !== LiveStatus.DISCONNECTED}
-                  className={`h-[42px] px-4 rounded-lg border flex items-center justify-center transition-all ${videoEnabled
-                      ? 'bg-blue-600/20 border-blue-500 text-blue-400'
-                      : 'bg-slate-950 border-slate-700 text-slate-500 hover:text-slate-300'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  title={videoEnabled ? "Camera On" : "Camera Off"}
-                >
-                  {videoEnabled ? <VideoCameraIcon className="w-5 h-5" /> : <VideoCameraSlashIcon className="w-5 h-5" />}
-                </button>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Video Input</label>
+                <div className="flex items-center gap-2">
+                  {/* Camera Toggle */}
+                  <button
+                    onClick={() => setVideoMode(videoMode === 'camera' ? 'none' : 'camera')}
+                    disabled={status !== LiveStatus.DISCONNECTED}
+                    className={`h-[42px] px-4 rounded-lg border flex items-center justify-center transition-all ${videoMode === 'camera'
+                        ? 'bg-blue-600/20 border-blue-500 text-blue-400'
+                        : 'bg-slate-950 border-slate-700 text-slate-500 hover:text-slate-300'
+                      } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    title="Toggle Camera"
+                  >
+                    {videoMode === 'camera' ? <VideoCameraIcon className="w-5 h-5" /> : <VideoCameraSlashIcon className="w-5 h-5" />}
+                  </button>
+
+                  {/* Screen Share Toggle */}
+                  <button
+                    onClick={() => setVideoMode(videoMode === 'screen' ? 'none' : 'screen')}
+                    disabled={status !== LiveStatus.DISCONNECTED}
+                    className={`h-[42px] px-4 rounded-lg border flex items-center justify-center transition-all ${videoMode === 'screen'
+                        ? 'bg-purple-600/20 border-purple-500 text-purple-400'
+                        : 'bg-slate-950 border-slate-700 text-slate-500 hover:text-slate-300'
+                      } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    title="Share Screen"
+                  >
+                    <ComputerDesktopIcon className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
             </div>
 
